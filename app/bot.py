@@ -161,11 +161,12 @@ class App(object):
     # -- replies ----------------------------------------------------------
 
     def build(self, st, loc):
+        st = mtr.canonical(st)  # either half of an interchange: one board
         others = []
         distance = None
         if loc:
             ranked = mtr.nearest(loc[0], loc[1], limit=NEARBY_OTHERS + 1)
-            distance = mtr.distance_m(loc[0], loc[1], st.lat, st.lon)
+            distance = mtr.distance_to(st, loc[0], loc[1])
             others = [(m, s) for m, s in ranked if s.key != st.key][:NEARBY_OTHERS]
         board = mtr.board(st)
         return render.board_text(board, distance), render.board_keyboard(st, loc, others)
@@ -207,8 +208,8 @@ def _exact(query, st):
         return True
     if q not in (mtr._norm(st.en), mtr._norm(st.zh)):
         return False
-    # "Tuen Mun" is both an MTR station and a Light Rail stop: still ask.
-    same = [s for s in mtr.STATIONS.values() if q in (mtr._norm(s.en), mtr._norm(s.zh))]
+    # An interchange's two halves share a name but are one board.
+    same = {mtr.canonical(s) for s in mtr.STATIONS.values() if q in (mtr._norm(s.en), mtr._norm(s.zh))}
     return len(same) == 1
 
 

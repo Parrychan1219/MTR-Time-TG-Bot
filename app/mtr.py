@@ -53,11 +53,15 @@ LINES = {
 HEAVY = "M"
 LIGHT = "L"
 
+# MTR stations that are also a Light Rail stop: MTR code -> LRT stop id.
+# Either half gives one board, heavy rail first, then Light Rail.
+INTERCHANGES = {"SIH": "100", "TUM": "295", "TIS": "430", "YUL": "600"}
+
 
 # -- stations ---------------------------------------------------------------
 
 class Station(object):
-    __slots__ = ("kind", "id", "en", "zh", "lat", "lon", "lines")
+    __slots__ = ("kind", "id", "en", "zh", "lat", "lon", "lines", "partner")
 
     def __init__(self, kind, sid, rec):
         self.kind = kind
@@ -68,6 +72,8 @@ class Station(object):
         self.lon = rec["lon"]
         # Heavy rail: line codes to query. Light Rail: route numbers, display only.
         self.lines = rec["lines"] if kind == HEAVY else rec["routes"]
+        # The other half of an interchange (see INTERCHANGES), or None.
+        self.partner = None
 
     @property
     def key(self):
@@ -83,6 +89,9 @@ def _load(path=None):
         out["%s:%s" % (HEAVY, sid)] = Station(HEAVY, sid, rec)
     for sid, rec in raw["lrt"].items():
         out["%s:%s" % (LIGHT, sid)] = Station(LIGHT, sid, rec)
+    for code, stop in INTERCHANGES.items():
+        heavy, light = out["%s:%s" % (HEAVY, code)], out["%s:%s" % (LIGHT, stop)]
+        heavy.partner, light.partner = light, heavy
     return out
 
 
@@ -91,6 +100,11 @@ STATIONS = _load()
 
 def get(key):
     return STATIONS.get(key)
+
+
+def canonical(st):
+    """The station a board is shown for: the MTR half of an interchange."""
+    return st.partner if st.kind == LIGHT and st.partner else st
 
 
 def distance_m(lat1, lon1, lat2, lon2):
@@ -102,10 +116,17 @@ def distance_m(lat1, lon1, lat2, lon2):
     return 2 * r * math.asin(math.sqrt(a))
 
 
+def distance_to(st, lat, lon):
+    """Metres to a station, or to whichever half of an interchange is closer."""
+    halves = (st, st.partner) if st.partner else (st,)
+    return min(distance_m(lat, lon, s.lat, s.lon) for s in halves)
+
+
 def nearest(lat, lon, limit=5):
-    """[(metres, Station)], closest first, heavy rail and Light Rail mixed."""
+    """[(metres, Station)], closest first, heavy rail and Light Rail mixed.
+    An interchange appears once, as its MTR station."""
     ranked = sorted(
-        ((distance_m(lat, lon, s.lat, s.lon), s) for s in STATIONS.values()),
+        ((distance_to(s, lat, lon), s) for s in STATIONS.values() if canonical(s) is s),
         key=lambda pair: pair[0],
     )
     return ranked[:limit]
@@ -136,7 +157,12 @@ def search(query, limit=8):
         # Heavy rail first on a tie: "Tuen Mun" is usually the MTR station.
         scored.append((rank, 0 if s.kind == HEAVY else 1, s.en, s))
     scored.sort(key=lambda t: t[:3])
-    return [t[3] for t in scored[:limit]]
+    out = []
+    for t in scored:
+        st = canonical(t[3])  # an interchange's two halves are one result
+        if st not in out:
+            out.append(st)
+    return out[:limit]
 
 
 # -- fetching ---------------------------------------------------------------
@@ -217,7 +243,8 @@ class Group(object):
 
 
 class Section(object):
-    def __init__(self, title, title_zh="", groups=None, error=None, warning=None):
+    def __init__(self, title, title_zh="", groups=None, error=None, warning=None, kind=HEAVY):
+        self.kind = kind
         self.title = title
         self.title_zh = title_zh
         self.groups = groups or []
@@ -319,10 +346,10 @@ def lrt_sections(station_id):
     try:
         payload = _get_json(LRT_URL, {"station_id": station_id})
     except FetchError as exc:
-        return [Section("Light Rail", "輕鐵", error=str(exc))], None
+        return [Section("Light Rail", "輕鐵", error=str(exc), kind=LIGHT)], None
     if str(payload.get("status")) != "1":
         msg = str(payload.get("message") or "Light Rail service alert")[:300]
-        return [Section("Light Rail", "輕鐵", error=msg)], None
+        return [Section("Light Rail", "輕鐵", error=msg, kind=LIGHT)], None
 
     updated = _parse_ts(payload.get("system_time"))
     base = updated or datetime.datetime.now(HKT)
@@ -357,9 +384,11 @@ def lrt_sections(station_id):
         warning = "Some routes at this platform are suspended." if stopped else None
         if not trains and not stopped:
             warning = "No trains listed."
-        sections.append(Section(title, groups=[Group("", trains)] if trains else [], warning=warning))
+        sections.append(Section(title, groups=[Group("", trains)] if trains else [], warning=warning,
+                                kind=LIGHT))
     if not sections:
-        sections.append(Section("Light Rail", "輕鐵", warning="No trains listed (outside service hours?)."))
+        sections.append(Section("Light Rail", "輕鐵", warning="No trains listed (outside service hours?).",
+                                kind=LIGHT))
     return sections, updated
 
 
@@ -368,12 +397,22 @@ _pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mtr")
 
 def board(station):
     """Fetch everything for one station. Never raises for API trouble: errors
-    become per-section messages so one bad line does not hide the others."""
+    become per-section messages so one bad line does not hide the others.
+
+    At an interchange, either half gives the whole board: the MTR lines
+    first, then the Light Rail platforms (sections carry their kind)."""
+    station = canonical(station)
     if station.kind == HEAVY:
         futures = [_pool.submit(heavy_section, line, station.id) for line in station.lines]
+        light = _pool.submit(lrt_sections, station.partner.id) if station.partner else None
         results = [f.result() for f in futures]
         sections = [r[0] for r in results]
         stamps = [r[1] for r in results if r[1]]
+        if light:
+            lrt, stamp = light.result()
+            sections.extend(lrt)
+            if stamp:
+                stamps.append(stamp)
         updated = max(stamps) if stamps else None
     else:
         sections, updated = lrt_sections(station.id)

@@ -180,7 +180,8 @@ def main():
         check("refresh + nearby buttons", kb[0][0]["text"].startswith("🔄") and len(kb) == 5, str(kb))
         check("callback data fits 64 bytes", all(len(b[0]["callback_data"].encode()) <= 64 for b in kb), str(kb))
 
-        # Tap a Light Rail stop button -> edited in place.
+        # Tap a Light Rail stop button -> edited in place. Tin Shui Wai is
+        # also a Tuen Ma Line station, so the board carries both, MTR first.
         drain()
         push(callback_query={"id": "cq1", "from": {"id": 42}, "data": "b:L:430:22.44800:114.00300",
                              "message": {"message_id": 5, "chat": {"id": 42}}})
@@ -189,11 +190,44 @@ def main():
         check("LRT board via button", "Tin Shui Wai" in t and "Platform 1" in t and "751" in t, t)
         check("LRT Arriving + computed clock", "Arriving</code>  17:00" in t and "7 min</code>  17:07" in t, t)
         check("LRT platform without trains", "Platform 2" in t and "No trains listed" in t, t)
+        check("interchange: heavy rail, then Light Rail",
+              "Tuen Ma Line" in t and "Light Rail 輕鐵" in t
+              and t.index("Tuen Ma Line") < t.index("Light Rail 輕鐵") < t.index("<u>Platform 1</u>"), t)
+
+        # User 43 from here on, to stay clear of user 42's burst limit.
+        # A Light Rail stop that is not an MTR station stays Light Rail only.
+        drain()
+        push(callback_query={"id": "cq2", "from": {"id": 43}, "data": "b:L:445",
+                             "message": {"message_id": 6, "chat": {"id": 43}}})
+        t = expect("editMessageText")["text"]
+        check("plain LRT stop has no heavy rail", "Tin Yiu" in t and "Platform 1" in t and "Tuen Ma Line" not in t, t)
+
+        # Standing on the Light Rail platform at Siu Hong: one board with
+        # both, and Siu Hong is not offered again as a "nearby" button.
+        drain()
+        msg(location=(22.41201, 113.978271), user=43)
+        r = expect("sendMessage")
+        t = r["text"]
+        check("location at interchange -> both, heavy first",
+              "Siu Hong" in t and "Tuen Ma Line" in t and "Light Rail 輕鐵" in t
+              and t.index("Tuen Ma Line") < t.index("Light Rail 輕鐵"), t)
+        kb = json.loads(r["reply_markup"])["inline_keyboard"]
+        check("interchange not repeated in nearby buttons",
+              not any("Siu Hong" in row[0]["text"] for row in kb[1:]) and len(kb) == 5, str(kb))
+        check("interchange buttons use the MTR station", kb[0][0]["callback_data"].startswith("b:M:SIH:"), str(kb))
 
         drain()
-        msg("tuen mun")
+        msg("tuen mun", user=43)
         r = expect("sendMessage")
-        check("ambiguous name asks which one", r["text"] == "Which one?" and "M:TUM" in r["reply_markup"], str(r))
+        t = r["text"]
+        check("interchange name goes straight to the board",
+              "Tuen Mun" in t and t.index("Tuen Ma Line") < t.index("Light Rail 輕鐵"), t)
+
+        msg("siu", user=43)
+        r = expect("sendMessage")
+        kb = r.get("reply_markup", "")
+        check("ambiguous name asks which one, interchange listed once",
+              r["text"] == "Which one?" and kb.count("Siu Hong") == 1 and "M:SIH" in kb, str(r))
 
         msg("TKO")
         r = expect("sendMessage")
