@@ -1,0 +1,13 @@
+# MTR next-train Telegram bot -- the only credential file.
+# Location: /etc/mtr-nexttrain-bot/bot.conf   (root:root 0600)
+#
+# 1. Paste the token from @BotFather after the "=" (no quotes needed).
+# 2. sudo systemctl restart mtr-nexttrain-bot
+# 3. journalctl -u mtr-nexttrain-bot -n 5   ->  "connected as @yourbot"
+#
+# To rotate: /revoke in BotFather, replace the value here, restart.
+bot_token =
+
+# Optional. Comma-separated numeric Telegram user ids. Empty = anyone who finds
+# the bot can use it (the data is public; a per-user burst limit still applies).
+allowed_users =
